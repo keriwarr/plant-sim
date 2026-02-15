@@ -1,5 +1,5 @@
 import { Grid } from './Grid';
-import { Plant, GrowthStage } from './Plant';
+import { Plant, GrowthStage, type DeathCause } from './Plant';
 import { createRandomGenome, mutateGenome, decodeTraits } from './Genome';
 import type { Seed } from './Seed';
 
@@ -19,12 +19,20 @@ const DEFAULT_CONFIG: SimConfig = {
   mutationRate: 0.02,
 };
 
+export let ENERGY_SCALE = 0.01;
+export function setEnergyScale(v: number) { ENERGY_SCALE = v; }
+const REPRO_INTERVAL_FRACTION = 0.05;
+const MAX_SEED_AGE = 150;
+export let SEED_DISPERSAL_SCALE = 1.0;
+export function setSeedDispersalScale(v: number) { SEED_DISPERSAL_SCALE = v; }
+
 export class Simulation {
   readonly grid: Grid;
   readonly config: SimConfig;
   plants: Plant[] = [];
   seeds: Seed[] = [];
   tick: number = 0;
+  deathCounts: Record<DeathCause, number> = { energy: 0, age: 0, topple: 0, germination: 0 };
 
   // Events for the renderer
   onPlantAdded?: (plant: Plant) => void;
@@ -42,7 +50,8 @@ export class Simulation {
       const y = Math.floor(Math.random() * this.grid.height);
       if (!this.grid.isOccupied(x, y)) {
         const genes = createRandomGenome();
-        const plant = new Plant(x, y, genes, 50, 0);
+        const traits = decodeTraits(genes);
+        const plant = new Plant(x, y, genes, traits.seedEnergy * 2, 0);
         plant.stage = GrowthStage.Seedling; // skip germination for initial plants
         plant.currentHeight = 1;
         this.addPlant(plant);
@@ -64,11 +73,9 @@ export class Simulation {
   step(): void {
     this.tick++;
 
-    // 1. Build shadow map (tallest first)
-    this.computeShadowMap();
-
-    // 2. Energy collection
-    this.collectEnergy();
+    // 1-2. Height-aware shadow + energy: process leaves top-to-bottom
+    // so each leaf only sees shade from leaves above it
+    this.computeLightAndEnergy();
 
     // 3-4. Plant ticks (maintenance, growth, etc.)
     for (const plant of this.plants) {
@@ -85,25 +92,54 @@ export class Simulation {
     this.cleanup();
   }
 
-  private computeShadowMap(): void {
+  private computeLightAndEnergy(): void {
     this.grid.clearShadow();
 
-    // Sort plants by height (tallest first) so their shadows are stamped first
-    const sorted = [...this.plants]
-      .filter(p => p.isAlive && p.stage !== GrowthStage.Seed)
-      .sort((a, b) => b.currentHeight - a.currentHeight);
-
-    for (const plant of sorted) {
-      this.stampPlantShadow(plant);
+    // Gather all leaves from all living plants
+    interface LeafEntry {
+      x: number; y: number; z: number;
+      leafSize: number; leafOpacity: number; photoEfficiency: number;
+      plantIndex: number;
     }
-  }
+    const allLeaves: LeafEntry[] = [];
 
-  private stampPlantShadow(plant: Plant): void {
-    if (plant.currentLeafCount === 0) return;
+    for (let pi = 0; pi < this.plants.length; pi++) {
+      const plant = this.plants[pi];
+      if (!plant.isAlive || plant.stage === GrowthStage.Seed) continue;
+      if (plant.currentLeafCount === 0) continue;
 
-    const leafPositions = this.getLeafPositions(plant);
-    for (const pos of leafPositions) {
-      this.grid.stampLeafShadow(pos.x, pos.y, plant.traits.leafSize, plant.traits.leafOpacity);
+      const positions = this.getLeafPositions(plant);
+      for (const pos of positions) {
+        allLeaves.push({
+          x: pos.x, y: pos.y, z: pos.z,
+          leafSize: plant.traits.leafSize,
+          leafOpacity: plant.traits.leafOpacity,
+          photoEfficiency: plant.traits.photoEfficiency,
+          plantIndex: pi,
+        });
+      }
+    }
+
+    // Sort highest first — each leaf only sees shade from leaves above it
+    allLeaves.sort((a, b) => b.z - a.z);
+
+    // Single pass: read light, then stamp shadow
+    const energyByPlant = new Float64Array(this.plants.length);
+    for (const leaf of allLeaves) {
+      const leafEnergy = this.grid.getLitArea(
+        leaf.x, leaf.y, leaf.leafSize, leaf.leafOpacity
+      );
+      const effectiveEfficiency = 1 - Math.exp(-leaf.photoEfficiency);
+      energyByPlant[leaf.plantIndex] += leafEnergy * effectiveEfficiency;
+
+      this.grid.stampLeafShadow(leaf.x, leaf.y, leaf.leafSize, leaf.leafOpacity);
+    }
+
+    // Apply collected energy
+    for (let i = 0; i < this.plants.length; i++) {
+      if (energyByPlant[i] > 0) {
+        this.plants[i].energy += energyByPlant[i] * ENERGY_SCALE;
+      }
     }
   }
 
@@ -111,16 +147,18 @@ export class Simulation {
   getLeafPositions(plant: Plant): Array<{ x: number; y: number; z: number }> {
     const positions: Array<{ x: number; y: number; z: number }> = [];
     const angleStep = (Math.PI * 2) / Math.max(1, plant.currentLeafCount);
-    // Spread radius: use sin instead of tan to keep proportional and bounded
-    const maxSpread = Math.sin(Math.min(80, plant.traits.leafAngle) * Math.PI / 180) * plant.currentHeight * 0.4;
+    // Deterministic random rotation per plant so they don't all face the same way
+    const angleOffset = (plant.id * 2654435761 & 0xFFFFFF) / 0xFFFFFF * Math.PI * 2;
 
     for (let i = 0; i < plant.currentLeafCount; i++) {
-      const angle = angleStep * i;
-      // Leaves clustered in the top portion of the plant
+      const angle = angleOffset + angleStep * i;
+      // Leaves distributed in the top portion of the plant
       const t = plant.currentLeafCount === 1 ? 1 : i / (plant.currentLeafCount - 1);
       const heightFraction = 0.6 + 0.4 * t;
       const leafHeight = plant.currentHeight * heightFraction;
-      const radius = maxSpread * (0.5 + 0.5 * t);
+      // Branches taper toward the top — widest at bottom, narrowest at top
+      const taper = 1 - t * 0.7;
+      const radius = plant.traits.branchLength * taper;
 
       positions.push({
         x: plant.x + Math.cos(angle) * radius,
@@ -132,41 +170,6 @@ export class Simulation {
     return positions;
   }
 
-  private collectEnergy(): void {
-    for (const plant of this.plants) {
-      if (!plant.isAlive || plant.stage === GrowthStage.Seed) continue;
-      if (plant.currentLeafCount === 0) continue;
-
-      const leafPositions = this.getLeafPositions(plant);
-      let totalEnergy = 0;
-
-      // Sort leaves top-to-bottom for self-shading
-      const sortedLeaves = leafPositions
-        .map((pos, i) => ({ pos, i }))
-        .sort((a, b) => b.pos.z - a.pos.z);
-
-      // Self-shading: each leaf below accumulates opacity from leaves above it.
-      // Wider leaf angles mean less overlap between a plant's own leaves.
-      const overlapFactor = 1 - Math.sin(Math.min(80, plant.traits.leafAngle) * Math.PI / 180) * 0.8;
-      let selfShade = 0;
-
-      for (const { pos } of sortedLeaves) {
-        const selfLight = Math.max(0, 1 - selfShade);
-        const leafEnergy = this.grid.getLitArea(
-          pos.x, pos.y,
-          plant.traits.leafSize,
-          plant.traits.leafOpacity
-        );
-        // Throughput bottleneck: larger leaves are less efficient per unit area
-        totalEnergy += leafEnergy * plant.traits.photoEfficiency * selfLight / plant.traits.leafSize;
-
-        // This leaf shades leaves below it
-        selfShade += plant.traits.leafOpacity * overlapFactor;
-      }
-
-      plant.energy += totalEnergy * 0.006;
-    }
-  }
 
   private reproduce(): void {
     const newSeeds: Seed[] = [];
@@ -174,22 +177,19 @@ export class Simulation {
     for (const plant of this.plants) {
       if (!plant.isMature) continue;
 
-      // Only produce seeds every ~50 ticks
-      if (plant.age % 50 !== 0) continue;
+      // Reproduction interval scales with lifespan
+      const reproInterval = Math.max(1, Math.floor(plant.traits.maxAge * REPRO_INTERVAL_FRACTION));
+      if (plant.age % reproInterval !== 0) continue;
 
       const budget = plant.seedBudget;
       const costPerSeed = plant.traits.seedEnergy;
-      const numSeeds = Math.min(
-        plant.traits.seedCount,
-        Math.floor(budget / costPerSeed)
-      );
+      const numSeeds = Math.floor(budget / costPerSeed);
 
       if (numSeeds <= 0) continue;
 
       for (let i = 0; i < numSeeds; i++) {
         const angle = Math.random() * Math.PI * 2;
-        // Taller/wider plants spread seeds further
-        const effectiveRange = plant.traits.seedRange * (plant.currentHeight / Math.max(1, plant.traits.maxHeight));
+        const effectiveRange = plant.currentHeight * SEED_DISPERSAL_SCALE * plant.traits.seedRange;
         const dist = Math.random() * effectiveRange;
         const sx = Math.round(plant.x + Math.cos(angle) * dist);
         const sy = Math.round(plant.y + Math.sin(angle) * dist);
@@ -224,7 +224,6 @@ export class Simulation {
   private germinateSeeds(): void {
     const germinated: Seed[] = [];
     const remaining: Seed[] = [];
-    const MAX_SEED_AGE = 150;
 
     for (const seed of this.seeds) {
       seed.age++;
@@ -260,11 +259,18 @@ export class Simulation {
   }
 
   private cleanup(): void {
-    const dead = this.plants.filter(p => !p.isAlive);
-    for (const plant of dead) {
-      this.removePlant(plant);
+    const alive: Plant[] = [];
+    for (const plant of this.plants) {
+      if (plant.isAlive) {
+        alive.push(plant);
+      } else {
+        if (plant.deathCause) {
+          this.deathCounts[plant.deathCause]++;
+        }
+        this.removePlant(plant);
+      }
     }
-    this.plants = this.plants.filter(p => p.isAlive);
+    this.plants = alive;
   }
 
   get livingPlantCount(): number {

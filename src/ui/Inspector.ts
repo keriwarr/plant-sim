@@ -1,5 +1,9 @@
 import type { Plant } from '../simulation/Plant';
 import { TRAIT_DEFS } from '../simulation/Genome';
+import { PANEL_WIDTH } from './PlantPreview';
+
+const PAD = 16;
+const GAP = 8;
 
 let inspectorEl: HTMLDivElement | null = null;
 
@@ -10,8 +14,10 @@ function getOrCreateInspector(): HTMLDivElement {
   inspectorEl.id = 'plant-inspector';
   Object.assign(inspectorEl.style, {
     position: 'fixed',
-    bottom: '16px',
-    left: '16px',
+    top: `calc(50% + ${GAP / 2}px)`,
+    left: `${PAD}px`,
+    bottom: `${PAD}px`,
+    width: `${PANEL_WIDTH}px`,
     background: 'rgba(0, 0, 0, 0.85)',
     color: '#eee',
     padding: '12px 16px',
@@ -19,10 +25,8 @@ function getOrCreateInspector(): HTMLDivElement {
     fontFamily: 'monospace',
     fontSize: '11px',
     lineHeight: '1.5',
-    maxWidth: '420px',
-    maxHeight: '80vh',
     overflowY: 'auto',
-    pointerEvents: 'none',
+    pointerEvents: 'auto',
     zIndex: '1000',
     display: 'none',
   });
@@ -49,7 +53,7 @@ export function showInspector(plant: Plant | null): void {
     const value = fmt(traits[def.name as keyof typeof traits] as number, def.integer);
     const unit = def.unit ? ` ${def.unit}` : '';
     const gene = plant.genes[i].toFixed(2);
-    return `  ${def.name.padEnd(16)} ${(value + unit).padStart(10)}  g=${gene}`;
+    return `  ${def.name.padEnd(18)} ${(value + unit).padStart(12)} g=${gene}`;
   }).join('\n');
 
   el.innerHTML = `<pre style="margin:0"><strong>Plant #${plant.id}</strong> (gen ${plant.generation})

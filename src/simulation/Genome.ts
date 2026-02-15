@@ -1,26 +1,24 @@
 // Trait definitions: each maps a gene (0,1) to a trait value via logit transform
 export interface TraitDef {
   name: string;
-  base: number;   // value when gene = 0.5
-  k: number;      // sensitivity (steepness of logit curve)
+  base: number;   // value when gene = 0.5 (logit), or max value (linear)
+  k: number;      // sensitivity (steepness of logit curve), unused for linear
   unit: string;   // display unit
   integer?: boolean; // floor the result
+  linear?: boolean;  // use gene * base instead of logit mapping
 }
 
 export const TRAIT_DEFS: TraitDef[] = [
-  { name: 'maxHeight',       base: 30,   k: 3,   unit: 'cm' },
+  { name: 'maxHeight',       base: 20,   k: 3,   unit: 'cm' },
   { name: 'growthRate',      base: 0.2,  k: 2,   unit: 'cm/tick' },
-  { name: 'trunkGirth',      base: 2,    k: 2,   unit: 'cm' },
-  { name: 'leafSize',        base: 3,    k: 2,   unit: 'cm' },
+  { name: 'trunkGirth',      base: 2,    k: 1.2, unit: 'cm' },
+  { name: 'leafSize',        base: 5,    k: 2,   unit: 'cm' },
   { name: 'leafCount',       base: 8,    k: 2,   unit: '', integer: true },
-  { name: 'leafAngle',       base: 25,   k: 1.2, unit: 'deg' },
-  { name: 'leafOpacity',     base: 0.6,  k: 1.5, unit: '' },
-  { name: 'seedCount',       base: 3,    k: 2,   unit: '', integer: true },
-  { name: 'seedRange',       base: 15,   k: 2,   unit: 'cells' },
-  { name: 'seedEnergy',      base: 20,   k: 2,   unit: 'E' },
+  { name: 'branchLength',    base: 8,    k: 2,   unit: 'cells' },
+  { name: 'leafOpacity',     base: 1,    k: 0,   unit: '', linear: true },
+  { name: 'seedRange',       base: 2,    k: 0,   unit: 'x', linear: true },
+  { name: 'seedEnergy',      base: 35,   k: 2,   unit: 'E' },
   { name: 'germinationSpeed',base: 50,   k: 1.5, unit: 'ticks', integer: true },
-  { name: 'branchAngle',     base: 40,   k: 1.5, unit: 'deg' },
-  { name: 'branchCount',     base: 3,    k: 1.5, unit: '', integer: true },
   { name: 'photoEfficiency', base: 1.0,  k: 1.5, unit: 'E/cell' },
   { name: 'maturityAge',     base: 150,  k: 1.5, unit: 'ticks', integer: true },
   { name: 'maxAge',          base: 1000, k: 2,   unit: 'ticks', integer: true },
@@ -35,9 +33,21 @@ function logit(x: number): number {
   return Math.log(clamped / (1 - clamped));
 }
 
+function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x));
+}
+
+const TRAIT_MIN = 1e-4;
+const TRAIT_MAX = 1e4;
+
 export function traitValue(gene: number, def: TraitDef): number {
-  const raw = def.base * Math.exp(def.k * logit(gene));
-  const val = Math.max(0, raw);
+  let val: number;
+  if (def.linear) {
+    val = gene * def.base;
+  } else {
+    val = def.base * Math.exp(def.k * logit(gene));
+  }
+  val = Math.max(TRAIT_MIN, Math.min(TRAIT_MAX, val));
   return def.integer ? Math.max(1, Math.floor(val)) : val;
 }
 
@@ -48,14 +58,11 @@ export interface Traits {
   trunkGirth: number;
   leafSize: number;
   leafCount: number;
-  leafAngle: number;
+  branchLength: number;
   leafOpacity: number;
-  seedCount: number;
   seedRange: number;
   seedEnergy: number;
   germinationSpeed: number;
-  branchAngle: number;
-  branchCount: number;
   photoEfficiency: number;
   maturityAge: number;
   maxAge: number;
@@ -72,8 +79,7 @@ export function decodeTraits(genes: Genes): Traits {
 export function createRandomGenome(): Genes {
   const genes = new Float64Array(GENE_COUNT);
   for (let i = 0; i < GENE_COUNT; i++) {
-    // Start near center with some spread
-    genes[i] = 0.3 + Math.random() * 0.4;
+    genes[i] = 0.35 + Math.random() * 0.3;
   }
   return genes;
 }
@@ -86,13 +92,13 @@ function gaussianRandom(mean: number, stddev: number): number {
   return mean + z * stddev;
 }
 
-const EPSILON = 1e-4;
-
-export function mutateGenome(parent: Genes, mutationRate: number = 0.02): Genes {
+export function mutateGenome(parent: Genes, mutationRate: number): Genes {
   const child = new Float64Array(GENE_COUNT);
   for (let i = 0; i < GENE_COUNT; i++) {
-    const mutated = parent[i] + gaussianRandom(0, mutationRate);
-    child[i] = Math.max(EPSILON, Math.min(1 - EPSILON, mutated));
+    // Mutate in logit space so genes asymptote toward 0/1 instead of clamping
+    const parentLogit = logit(parent[i]);
+    const mutatedLogit = parentLogit + gaussianRandom(0, mutationRate * 4);
+    child[i] = sigmoid(mutatedLogit);
   }
   return child;
 }

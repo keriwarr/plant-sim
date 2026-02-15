@@ -70,32 +70,6 @@ export class Grid {
     return Math.max(0, 1 - this.shadow[this.index(x, y)]);
   }
 
-  // Compute average light under a circular area
-  getAverageLight(cx: number, cy: number, radius: number): number {
-    const r = Math.ceil(radius);
-    const rSq = radius * radius;
-    const x0 = Math.max(0, Math.floor(cx - r));
-    const y0 = Math.max(0, Math.floor(cy - r));
-    const x1 = Math.min(this.width - 1, Math.ceil(cx + r));
-    const y1 = Math.min(this.height - 1, Math.ceil(cy + r));
-
-    let totalLight = 0;
-    let count = 0;
-
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) {
-        const dx = x - cx;
-        const dy = y - cy;
-        if (dx * dx + dy * dy <= rSq) {
-          totalLight += this.getLight(x, y);
-          count++;
-        }
-      }
-    }
-
-    return count > 0 ? totalLight / count : 0;
-  }
-
   // Get total lit cells under a circular area (for energy calculation)
   getLitArea(cx: number, cy: number, radius: number, opacity: number): number {
     const r = Math.ceil(radius);

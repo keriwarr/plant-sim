@@ -1,9 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { createGround } from './Ground';
-import { createPlantGeometry } from './PlantMesh';
+import { createPlantGeometry, disposeGroup } from './PlantMesh';
 import { Plant } from '../simulation/Plant';
 import type { Simulation } from '../simulation/Simulation';
+
+// Each grid cell = 0.5 world units, so plants (measured in cm) appear larger relative to ground
+const CELL_SCALE = 0.5;
 
 export class SceneManager {
   readonly scene: THREE.Scene;
@@ -22,8 +25,8 @@ export class SceneManager {
 
   constructor(sim: Simulation) {
     this.sim = sim;
-    const w = sim.config.gridWidth;
-    const h = sim.config.gridHeight;
+    const w = sim.config.gridWidth * CELL_SCALE;
+    const h = sim.config.gridHeight * CELL_SCALE;
 
     // Scene
     this.scene = new THREE.Scene();
@@ -53,10 +56,10 @@ export class SceneManager {
     const ambient = new THREE.AmbientLight(0xffffff, 0.5);
     this.scene.add(ambient);
     const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-    sun.position.set(w * 0.3, w, h * 0.3);
+    sun.position.set(w * 0.3, Math.max(w, 100), h * 0.3);
     this.scene.add(sun);
 
-    // Ground plane
+    // Ground plane (w and h are already scaled)
     this.scene.add(createGround(w, h));
 
     // Handle resize
@@ -77,7 +80,7 @@ export class SceneManager {
 
   private addPlantMesh(plant: Plant): void {
     const group = createPlantGeometry(plant, this.sim);
-    group.position.set(plant.x, 0, plant.y);
+    group.position.set(plant.x * CELL_SCALE, 0, plant.y * CELL_SCALE);
     group.userData.plantId = plant.id;
     this.scene.add(group);
     this.plantMeshes.set(plant.id, group);
@@ -87,15 +90,7 @@ export class SceneManager {
     const mesh = this.plantMeshes.get(plant.id);
     if (mesh) {
       this.scene.remove(mesh);
-      // Dispose geometry and materials
-      mesh.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-          if (child.material instanceof THREE.Material) {
-            child.material.dispose();
-          }
-        }
-      });
+      disposeGroup(mesh);
       this.plantMeshes.delete(plant.id);
     }
     if (this.selectedPlantId === plant.id) {
@@ -113,18 +108,11 @@ export class SceneManager {
       const oldMesh = this.plantMeshes.get(plant.id);
       if (oldMesh) {
         this.scene.remove(oldMesh);
-        oldMesh.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            child.geometry.dispose();
-            if (child.material instanceof THREE.Material) {
-              child.material.dispose();
-            }
-          }
-        });
+        disposeGroup(oldMesh);
       }
 
       const newGroup = createPlantGeometry(plant, this.sim);
-      newGroup.position.set(plant.x, 0, plant.y);
+      newGroup.position.set(plant.x * CELL_SCALE, 0, plant.y * CELL_SCALE);
       newGroup.userData.plantId = plant.id;
       this.scene.add(newGroup);
       this.plantMeshes.set(plant.id, newGroup);

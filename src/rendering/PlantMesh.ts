@@ -33,10 +33,9 @@ function createLeafShape(size: number, rng: () => number): THREE.Shape {
       const wobble = 1 + Math.sin(t * Math.PI * 4) * 0.12;
       const x = Math.cos(angle) * w * wobble;
       const y = Math.sin(angle) * h;
-      if (i === 0) shape.lineTo(x, y);
-      else shape.lineTo(x, y);
+      shape.lineTo(x, y);
     }
-    for (let i = steps; i >= 0; i--) {
+    for (let i = 0; i <= steps; i++) {
       const t = i / steps;
       const angle = Math.PI / 2 + Math.PI * t;
       const wobble = 1 + Math.sin(t * Math.PI * 4) * 0.12;
@@ -56,6 +55,17 @@ function createLeafShape(size: number, rng: () => number): THREE.Shape {
   return shape;
 }
 
+export function disposeGroup(group: THREE.Group): void {
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose();
+      if (child.material instanceof THREE.Material) {
+        child.material.dispose();
+      }
+    }
+  });
+}
+
 export function createPlantGeometry(plant: Plant, sim: Simulation): THREE.Group {
   const group = new THREE.Group();
 
@@ -72,41 +82,35 @@ export function createPlantGeometry(plant: Plant, sim: Simulation): THREE.Group 
   const height = plant.currentHeight;
   const rng = seededRandom(plant.id);
 
-  // Trunk - slight curve via segments
   const trunkRadiusBottom = Math.max(0.3, traits.trunkGirth * 0.5);
   const trunkRadiusTop = trunkRadiusBottom * 0.4;
-  const trunkSegments = 3;
-  const trunkLean = (rng() - 0.5) * 0.8; // slight lean unique to this plant
-  const trunkLeanZ = (rng() - 0.5) * 0.8;
   const trunkColor = new THREE.Color(0.35 + rng() * 0.1, 0.22 + rng() * 0.05, 0.08);
   const trunkMat = new THREE.MeshLambertMaterial({ color: trunkColor });
 
-  // Build trunk as connected segments for slight curve
-  for (let s = 0; s < trunkSegments; s++) {
-    const t0 = s / trunkSegments;
-    const t1 = (s + 1) / trunkSegments;
-    const segHeight = height / trunkSegments;
-    const r0 = trunkRadiusBottom + (trunkRadiusTop - trunkRadiusBottom) * t0;
-    const r1 = trunkRadiusBottom + (trunkRadiusTop - trunkRadiusBottom) * t1;
-
-    const segGeo = new THREE.CylinderGeometry(r1, r0, segHeight, 6, 1);
-    const segMesh = new THREE.Mesh(segGeo, trunkMat);
-
-    const y = height * (t0 + t1) / 2;
-    const lean = Math.sin(t0 * Math.PI) * trunkLean;
-    const leanZ = Math.sin(t0 * Math.PI) * trunkLeanZ;
-    segMesh.position.set(lean, y, leanZ);
-
-    group.add(segMesh);
+  // Trunk stops at the highest branch attachment point
+  const leafPositions = sim.getLeafPositions(plant);
+  let maxAttachY = height * 0.3; // minimum trunk height
+  for (let i = 0; i < plant.currentLeafCount; i++) {
+    const lp = leafPositions[i];
+    if (!lp) continue;
+    const localX = lp.x - plant.x;
+    const localZ = lp.y - plant.y;
+    const leafY = lp.z;
+    const attachY = Math.max(0, leafY - Math.abs(localX + localZ) * 0.3);
+    if (attachY > maxAttachY) maxAttachY = attachY;
   }
+  const trunkHeight = maxAttachY;
+
+  const trunkGeo = new THREE.CylinderGeometry(trunkRadiusTop, trunkRadiusBottom, trunkHeight, 6, 1);
+  const trunkMesh = new THREE.Mesh(trunkGeo, trunkMat);
+  trunkMesh.position.y = trunkHeight / 2;
+  group.add(trunkMesh);
 
   // Leaf material — varies with photo efficiency
   const greenBase = 0.25 + Math.min(0.4, traits.photoEfficiency * 0.1);
   const leafColor = new THREE.Color(0.08, greenBase, 0.04);
   // Slightly lighter underside color for depth
   const leafColorLight = new THREE.Color(0.12, greenBase + 0.1, 0.06);
-
-  const leafPositions = sim.getLeafPositions(plant);
 
   // Create a leaf shape once per plant (all leaves share the same genetic shape)
   const leafRng = seededRandom(plant.id + 10000);
